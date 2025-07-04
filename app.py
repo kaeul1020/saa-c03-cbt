@@ -61,15 +61,14 @@ def load_questions(filepath):
 def mock_exam_page():
     st.header("모의고사 시험")
 
+    # Create a placeholder for the timer in the main content area
+    timer_placeholder = st.empty()
+
     total_time_seconds = 130 * 60 # 130 minutes
     
     # Initialize start_time if not set (first run of mock exam)
     if "start_time" not in st.session_state or st.session_state.start_time is None:
         st.session_state.start_time = time.time()
-
-    # Display timer in the sidebar
-    with st.sidebar:
-        timer_placeholder = st.empty()
 
     elapsed_seconds = int(time.time() - st.session_state.start_time)
     remaining_seconds = max(0, total_time_seconds - elapsed_seconds)
@@ -78,12 +77,12 @@ def mock_exam_page():
     seconds = remaining_seconds % 60
 
     timer_text = f"**남은 시간: {minutes:02d}:{seconds:02d}**"
-    with st.sidebar:
-        timer_placeholder.markdown(timer_text) # Display timer in the sidebar
+    timer_placeholder.markdown(timer_text) # Display timer in the main content area
 
     if remaining_seconds == 0:
         st.warning("시간이 초과되었습니다! 시험이 자동 종료됩니다.")
         st.session_state.page = "grading_page"
+        st.query_params["page"] = "grading_page" # Update URL
         st.rerun()
         return
 
@@ -146,6 +145,7 @@ def mock_exam_page():
     with col2:
         if st.button("시험 종료", help="현재까지의 답안으로 채점합니다.", key=f"mock_finish_exam"):
             st.session_state.page = "grading_page"
+            st.query_params["page"] = "grading_page" # Update URL
             st.rerun()
     with col3:
         if st.button("다음 문제", disabled=(current_q_index == len(st.session_state.selected_questions) - 1), key=f"mock_next_q{current_q_index}"):
@@ -155,6 +155,7 @@ def mock_exam_page():
     st.markdown("---")
     if st.button("메인 화면으로 돌아가기", key="mock_to_main"):
         st.session_state.page = "main"
+        st.query_params["page"] = "main" # Update URL
         # Clear mock exam related session states for a clean restart
         st.session_state.pop("selected_questions", None)
         st.session_state.pop("current_question_index", None)
@@ -169,19 +170,78 @@ def mock_exam_page():
 
 def single_question_page():
     st.header("1개씩 풀기")
+
     question = st.session_state.selected_question
     
+    # Create a hashable version of the question for comparison
+    # Convert 'options' list to a tuple to make the dictionary hashable
+    hashable_question_items = []
+    for k, v in question.items():
+        if k == "options" and isinstance(v, list):
+            hashable_question_items.append((k, tuple(v)))
+        else:
+            hashable_question_items.append((k, v))
+    current_q_hash = hash(frozenset(hashable_question_items))
+
+    # Initialize user_answer for the current question if not set or if it's a new question
+    # Using hash to detect if the question itself has changed
+    if "single_user_answer" not in st.session_state or st.session_state.get("last_single_q_hash") != current_q_hash:
+        st.session_state.single_user_answer = ""
+        st.session_state.last_single_q_hash = current_q_hash
+        st.session_state.show_correctness = False # Hide correctness until answered
+
     st.subheader(f"문제 {question['number']}")
     st.markdown(question["text"]) # Use markdown for potentially formatted text
 
     options = question["options"]
-    if options:
-        st.write("---")
-        st.write("선택지:")
-        for opt in options:
-            st.write(f"- {opt}")
-        st.write("---")
+    user_answer_for_display = st.session_state.single_user_answer
 
+    if not options:
+        st.warning("옵션을 파싱할 수 없습니다. 전체 텍스트를 보여줍니다.")
+    else:
+        st.markdown("---")
+        st.markdown("**선택지:**")
+
+        if len(question["answer"]) > 1: # Multi-choice question
+            default_selected = [opt for opt in options if opt[0] in user_answer_for_display]
+            selected_options_multiselect = st.multiselect(
+                "정답을 선택하세요:",
+                options=options,
+                default=default_selected,
+                key=f"single_q_multiselect_{question['number']}" # Unique key for each question
+            )
+            current_selection = "".join(sorted([opt[0] for opt in selected_options_multiselect]))
+        else: # Single-choice question
+            initial_index = None
+            if user_answer_for_display:
+                for idx, opt_text in enumerate(options):
+                    if opt_text.startswith(user_answer_for_display):
+                        initial_index = idx
+                        break
+            
+            selected_option_radio = st.radio(
+                "정답을 선택하세요:",
+                options=options,
+                index=initial_index, # Set initial selected item
+                key=f"single_q_radio_{question['number']}" # Unique key for each question
+            )
+            current_selection = selected_option_radio[0] if selected_option_radio else ""
+
+        # Update session state with current selection if it changed
+        if current_selection != st.session_state.single_user_answer:
+            st.session_state.single_user_answer = current_selection
+            st.session_state.show_correctness = True # Show correctness after selection
+            st.rerun() # Rerun to show correctness immediately
+
+        if st.session_state.show_correctness:
+            is_correct = sorted(list(st.session_state.single_user_answer)) == sorted(list(question["answer"]))
+            if is_correct:
+                st.success("정답입니다!")
+            else:
+                st.error("오답입니다.")
+
+        st.markdown("---")
+    
     # Answer toggle
     with st.expander("정답 보기"):
         st.success(f"정답: {question['answer']}")
@@ -189,11 +249,26 @@ def single_question_page():
     # Button to load next random question
     if st.button("다른 문제 풀기"):
         st.session_state.selected_question = random.choice(st.session_state.questions)
+        st.session_state.single_user_answer = "" # Reset answer for new question
+        st.session_state.show_correctness = False # Hide correctness for new question
+        # Update the hash for the new question as well
+        new_hashable_q_items = []
+        for k, v in st.session_state.selected_question.items():
+            if k == "options" and isinstance(v, list):
+                new_hashable_q_items.append((k, tuple(v)))
+            else:
+                new_hashable_q_items.append((k, v))
+        st.session_state.last_single_q_hash = hash(frozenset(new_hashable_q_items))
         st.rerun()
-    
+
     if st.button("메인 화면으로 돌아가기"):
         st.session_state.page = "main"
+        st.query_params["page"] = "main" # Update URL
+        # Clear single question related session states for a clean restart
         st.session_state.pop("selected_question", None)
+        st.session_state.pop("single_user_answer", None)
+        st.session_state.pop("show_correctness", None)
+        st.session_state.pop("last_single_q_hash", None)
         st.rerun()
 
 def grading_page():
@@ -242,9 +317,14 @@ def grading_page():
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("---")
 
-    if st.button("메인 화면으로 돌아가기", key="grading_to_main"):
+    st.subheader("최종 점수")
+    st.markdown(f"총 {total_questions} 문제 중 **{score} 문제** 정답.")
+    st.markdown(f"**점수: {round((score / total_questions) * 100, 2) if total_questions > 0 else 0}점**")
+
+    if st.button("메인 화면으로 돌아가기", key="grade_to_main"):
         st.session_state.page = "main"
-        # Clear mock exam related session states
+        st.query_params["page"] = "main" # Update URL
+        # Clear mock exam related session states for a clean restart
         st.session_state.pop("selected_questions", None)
         st.session_state.pop("current_question_index", None)
         st.session_state.pop("user_answers", None)
@@ -265,23 +345,47 @@ def main():
         st.session_state.user_answers = []
         st.session_state.start_time = None
         st.session_state.selected_question = None
+        st.session_state.single_user_answer = "" # New for single question answer
+        st.session_state.show_correctness = False # New for single question correctness display
+        st.session_state.last_single_q_hash = None # New for detecting new single question
 
-    # Page routing
-    if st.session_state.page == "main":
-        st.write("### 메인 화면")
-        if st.button("모의고사 시험 시작"):
-            st.session_state.page = "mock_exam"
-            # Ensure we select 65 questions, or fewer if total questions are less than 65
+    # Check URL query parameters for initial page, defaulting to "main"
+    current_url_page = st.query_params.get("page")
+    if current_url_page and st.session_state.page != current_url_page:
+        st.session_state.page = current_url_page
+        if st.session_state.page == "mock_exam" and not st.session_state.selected_questions:
             num_questions_for_mock = min(65, len(st.session_state.questions))
             st.session_state.selected_questions = random.sample(st.session_state.questions, num_questions_for_mock)
             st.session_state.current_question_index = 0
             st.session_state.user_answers = ["" for _ in range(num_questions_for_mock)]
-            st.session_state.start_time = time.time() # Record start time
+            st.session_state.start_time = time.time()
+        elif st.session_state.page == "single_question" and not st.session_state.selected_question:
+            st.session_state.selected_question = random.choice(st.session_state.questions)
+            st.session_state.single_user_answer = ""
+            st.session_state.show_correctness = False
+            st.session_state.last_single_q_hash = hash(frozenset(st.session_state.selected_question.items()))
+        elif st.session_state.page == "grading_page" and ("user_answers" not in st.session_state or not st.session_state.user_answers):
+            # If navigating directly to grading_page via URL without mock exam data, redirect to main
+            st.session_state.page = "main"
+            st.query_params["page"] = "main"
+            st.rerun()
+
+    # Page routing
+    if st.session_state.page == "main":
+        st.write("### 메인 화면")
+        if st.button("모의고사 시험 시작 (65문제, 130분)"):
+            st.session_state.page = "mock_exam"
+            st.query_params["page"] = "mock_exam" # Update URL
+            st.session_state.selected_questions = random.sample(st.session_state.questions, 65)
+            st.session_state.current_question_index = 0
+            st.session_state.user_answers = [""] * len(st.session_state.selected_questions)
+            st.session_state.start_time = None # Reset timer for new exam
             st.rerun()
 
         if st.button("1개씩 풀기"):
             st.session_state.page = "single_question"
-            st.session_state.selected_question = random.choice(st.session_state.questions)
+            st.query_params["page"] = "single_question" # Update URL
+            st.session_state.selected_question = random.choice(st.session_state.questions) # Select a random question for single mode
             st.rerun()
 
     elif st.session_state.page == "mock_exam":
