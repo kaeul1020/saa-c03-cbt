@@ -67,6 +67,10 @@ def mock_exam_page():
     if "start_time" not in st.session_state or st.session_state.start_time is None:
         st.session_state.start_time = time.time()
 
+    # Display timer in the sidebar
+    with st.sidebar:
+        timer_placeholder = st.empty()
+
     elapsed_seconds = int(time.time() - st.session_state.start_time)
     remaining_seconds = max(0, total_time_seconds - elapsed_seconds)
 
@@ -74,7 +78,8 @@ def mock_exam_page():
     seconds = remaining_seconds % 60
 
     timer_text = f"**남은 시간: {minutes:02d}:{seconds:02d}**"
-    st.markdown(timer_text) # Display timer at the top
+    with st.sidebar:
+        timer_placeholder.markdown(timer_text) # Display timer in the sidebar
 
     if remaining_seconds == 0:
         st.warning("시간이 초과되었습니다! 시험이 자동 종료됩니다.")
@@ -155,6 +160,11 @@ def mock_exam_page():
         st.session_state.pop("current_question_index", None)
         st.session_state.pop("user_answers", None)
         st.session_state.pop("start_time", None)
+        st.rerun()
+
+    # If time is still remaining and we are on the mock exam page, re-run the app after a 1-second delay
+    if remaining_seconds > 0 and st.session_state.page == "mock_exam":
+        time.sleep(1)
         st.rerun()
 
 def single_question_page():
